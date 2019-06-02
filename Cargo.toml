@@ -1,0 +1,16 @@
+[package]
+name = "rs_estimator"
+version = "0.1.0"
+authors = ["Joan Massich <mailsik@gmail.com>"]
+
+[lib]
+name = "rs_estimator"
+crate-type = ["cdylib"]
+
+[dependencies]
+numpy = "0.6.0"
+ndarray = "0.12"
+
+[dependencies.pyo3]
+version = "0.7"
+features = ["extension-module"]

@@ -1,0 +1,142 @@
+version: 2
+
+jobs:
+  rust-stable:
+    working_directory: ~/repo
+    docker:
+      - image: rust:1.31.0-slim-stretch
+    steps:
+      - run:
+          name: dependencies
+          command: |
+            apt-get update
+            apt-get install -y build-essential git
+      - checkout
+      - run:
+          name: build
+          command: |
+            cargo build
+
+      - run:
+          name: test
+          command: |
+            cargo test
+
+  python:
+    working_directory: ~/repo
+    docker:
+      - image: konstin2/pyo3-pack:0.5.0
+    steps:
+      - checkout
+      - run:
+          name: dependencies
+          command: |
+            python3.7 -m pip install tox
+            rustup default nightly-2019-02-28
+            rustup target add x86_64-unknown-linux-musl
+      - run:
+          name: build-wheels
+          command: |
+            cd python
+            for PYBIN in python3.{5,6,7}; do
+                "$PYBIN" -m pip install -r requirements.txt
+                "$PYBIN" -m pip install wheel==0.31.1 auditwheel==2.0.0 pytest
+                "$PYBIN" setup.py bdist_wheel
+            done
+            for whl in dist/*.whl; do
+                auditwheel repair "$whl" -w dist/
+            done
+            rm dist/*-linux_*
+      - run:
+          name: test
+          command: |
+            cd python
+            for PYBIN in python3.{5,6,7}; do
+                "$PYBIN" -m pip uninstall -y rs_estimator
+                cd /tmp/
+                "$PYBIN" -m pip install --pre --no-index --find-links /root/repo/python/dist/ rs_estimator
+                "$PYBIN" -m pytest --pyargs rs_estimator
+                cd -
+            done
+      - persist_to_workspace:
+          root: .
+          paths:
+            - ./python/dist/
+      - store_artifacts:
+          path: /root/repo/python/dist/
+
+
+  docs:
+    working_directory: ~/repo
+    docker:
+      - image: circleci/python:3.7.3
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: dependencies
+          command: |
+            python -m venv venv
+            source venv/bin/activate
+            pip install -r python/requirements.txt
+            pip install --pre --no-index --find-links python/dist/ rs_estimator
+      - run:
+          name: html docs
+          command: |
+            source venv/bin/activate
+            cd doc/
+            make html
+      - run:
+          name: upload docs
+          command: |
+            if [ "$CIRCLE_BRANCH" == "master" ]
+            then
+                source venv/bin/activate
+                # aws s3 sync --delete doc/_build/html/ s3://rs_estimator/doc/latest/ --cache-control max-age=60
+            fi
+      - store_artifacts:
+          path: /root/repo/doc/_build/html/
+
+
+  lint:
+    working_directory: ~/repo
+    docker:
+      - image: rthz/rust-nightly-python37
+    steps:
+      - checkout
+
+      - run:
+          name: dependencies
+          command: |
+            apt-get update
+            rustup component add rustfmt-preview
+            python -m pip install flake8 black
+
+      - run:
+          name: lint
+          command: |
+            cargo fmt -- --check
+            flake8 --max-line-length=88 rs_estimator/ tests/
+            black --check rs_estimator/ tests/
+            cd python && cargo fmt -- --check
+
+
+workflows:
+  version: 2
+  build:
+    jobs:
+      - rust-stable
+      - python
+      - lint
+      - upload-wheels:
+          requires:
+            - python
+            - lint
+            - rust-stable
+          filters:
+            branches:
+              only: master
+      - docs:
+          requires:
+            - python
